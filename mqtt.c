@@ -67,7 +67,7 @@ static bool client_connect(mqtt_client *client)
         }
 
 
-#if defined(CONFIG_MQTT_SECURITY_ON)  // ENABLE MQTT OVER SSL
+#if CONFIG_MQTT_SECURITY_ON  // ENABLE MQTT OVER SSL
         client->ctx = NULL;
         client->ssl = NULL;
 
@@ -97,7 +97,7 @@ static bool client_connect(mqtt_client *client)
             goto failed3;
         }
 
-#if defined(CONFIG_MQTT_SECURITY_ON)  // ENABLE MQTT OVER SSL
+#if CONFIG_MQTT_SECURITY_ON  // ENABLE MQTT OVER SSL
         mqtt_info("Creating SSL object...");
         client->ssl = SSL_new(client->ctx);
         if (!client->ssl) {
@@ -123,7 +123,7 @@ static bool client_connect(mqtt_client *client)
         //failed5:
         //   SSL_shutdown(client->ssl);
 
-#if defined(CONFIG_MQTT_SECURITY_ON)
+#if CONFIG_MQTT_SECURITY_ON
         failed4:
           SSL_free(client->ssl);
           client->ssl = NULL;
@@ -134,7 +134,7 @@ static bool client_connect(mqtt_client *client)
           client->socket = -1;
 
         failed2:
-#if defined(CONFIG_MQTT_SECURITY_ON)
+#if CONFIG_MQTT_SECURITY_ON
           SSL_CTX_free(client->ctx);
 
         failed1:
@@ -158,7 +158,7 @@ void closeclient(mqtt_client *client)
 	  client->socket = -1;
 	}
 
-#if defined(CONFIG_MQTT_SECURITY_ON)
+#if CONFIG_MQTT_SECURITY_ON
 	if (client->ssl != NULL)
 	{
 	  SSL_shutdown(client->ssl);
@@ -190,7 +190,7 @@ int mqtt_read(mqtt_client *client, void *buffer, int len, int timeout_ms)
         setsockopt(client->socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
 
-#if defined(CONFIG_MQTT_SECURITY_ON)
+#if CONFIG_MQTT_SECURITY_ON
     result = SSL_read(client->ssl, buffer, len);
 #else
     result = read(client->socket, buffer, len);
@@ -219,7 +219,7 @@ int mqtt_write(mqtt_client *client, const void *buffer, int len, int timeout_ms)
         setsockopt(client->socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
 
-#if defined(CONFIG_MQTT_SECURITY_ON)
+#if CONFIG_MQTT_SECURITY_ON
     result = SSL_write(client->ssl, buffer, len);
 #else
     result = write(client->socket, buffer, len);
@@ -618,7 +618,7 @@ mqtt_client *mqtt_start(mqtt_settings *settings)
     if (!client->settings->write_cb)
         client->settings->write_cb = mqtt_write;
 
-#if defined(CONFIG_MQTT_SECURITY_ON)  // ENABLE MQTT OVER SSL
+#if CONFIG_MQTT_SECURITY_ON  // ENABLE MQTT OVER SSL
     client->ctx = NULL;
     client->ssl = NULL;
     stackSize = 10240; // Need more stack to handle SSL handshake
@@ -680,4 +680,3 @@ void mqtt_stop()
 {
 	terminate_mqtt = true;
 }
-

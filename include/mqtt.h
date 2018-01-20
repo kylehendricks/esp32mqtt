@@ -7,7 +7,7 @@
 #include "mqtt_msg.h"
 #include "ringbuf.h"
 
-#if defined(CONFIG_MQTT_SECURITY_ON)
+#if CONFIG_MQTT_SECURITY_ON
 #include "openssl/ssl.h"
 #endif
 
@@ -103,7 +103,7 @@ typedef struct mqtt_state_t
 typedef struct mqtt_client {
   int socket;
 
-#if defined(CONFIG_MQTT_SECURITY_ON)  // ENABLE MQTT OVER SSL
+#if CONFIG_MQTT_SECURITY_ON  // ENABLE MQTT OVER SSL
   SSL_CTX *ctx;
   SSL *ssl;
 #endif
