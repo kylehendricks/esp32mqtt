@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 #define CONFIG_MQTT_PROTOCOL_311 1
-#define CONFIG_MQTT_SECURITY_ON 0
+#define CONFIG_MQTT_SECURITY_ON 1
 #define CONFIG_MQTT_PRIORITY 5
 #define CONFIG_MQTT_LOG_ERROR_ON
 #define CONFIG_MQTT_LOG_WARN_ON
@@ -19,26 +19,26 @@
 #define CONFIG_MQTT_MAX_LWT_TOPIC 32
 #define CONFIG_MQTT_MAX_LWT_MSG 32
 
-
-
 #ifdef CONFIG_MQTT_LOG_ERROR_ON
-#define mqtt_error(format, ... ) printf( "[MQTT ERROR] " format "\n", ##__VA_ARGS__)
+  #define mqtt_error(...) ESP_LOGE(TAG, __VA_ARGS__)
 #else
-#define mqtt_error( format, ... )
+  #define mqtt_error(...)
 #endif
+
 #ifdef CONFIG_MQTT_LOG_WARN_ON
-#define mqtt_warn(format, ... ) printf( "[MQTT WARN] " format "\n", ##__VA_ARGS__)
+  #define mqtt_warn(...) ESP_LOGW(TAG, __VA_ARGS__)
 #else
-#define mqtt_warn( format, ... )
+  #define mqtt_warn(...)
 #endif
+
 #ifdef CONFIG_MQTT_LOG_INFO_ON
-#define mqtt_info(format, ... ) printf( "[MQTT INFO] " format "\n", ##__VA_ARGS__)
+  #define mqtt_info(...) ESP_LOGI(TAG, __VA_ARGS__)
 #else
-#define mqtt_info(format, ... )
+  #define mqtt_info(...)
 #endif
 
 #ifndef CONFIG_MQTT_QUEUE_BUFFER_SIZE_WORD
-#define CONFIG_MQTT_QUEUE_BUFFER_SIZE_WORD 1024
+  #define CONFIG_MQTT_QUEUE_BUFFER_SIZE_WORD 1024
 #endif
 
 #endif

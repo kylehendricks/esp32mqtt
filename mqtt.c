@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
+#include "esp_err.h"
 
 #include "lwip/sockets.h"
 #include "lwip/dns.h"
@@ -16,222 +17,227 @@
 #include "ringbuf.h"
 #include "mqtt.h"
 
+#define TAG "MQTT"
+
 static TaskHandle_t xMqttTask = NULL;
 static TaskHandle_t xMqttSendingTask = NULL;
 
 static bool terminate_mqtt = false;
 
-static int resolve_dns(const char *host, struct sockaddr_in *ip) {
-    struct hostent *he;
-    struct in_addr **addr_list;
-    he = gethostbyname(host);
-    if (he == NULL) return 0;
-    addr_list = (struct in_addr **)he->h_addr_list;
-    if (addr_list[0] == NULL) return 0;
-    ip->sin_family = AF_INET;
-    memcpy(&ip->sin_addr, addr_list[0], sizeof(ip->sin_addr));
-    return 1;
+static int resolve_dns(const char *host, struct sockaddr_in *ip)
+{
+  struct hostent *he;
+  struct in_addr **addr_list;
+  
+  he = gethostbyname(host);
+  if (he == NULL) return 0;
+  
+  addr_list = (struct in_addr **) he->h_addr_list;
+  if (addr_list[0] == NULL) return 0;
+  
+  ip->sin_family = AF_INET;
+  memcpy(&ip->sin_addr, addr_list[0], sizeof(ip->sin_addr));
+  
+  return 1;
 }
+
 static void mqtt_queue(mqtt_client *client)
 {
-    int msg_len;
-    while (rb_available(&client->send_rb) < client->mqtt_state.outbound_message->length) {
-        xQueueReceive(client->xSendingQueue, &msg_len, 1000 / portTICK_RATE_MS);
-        rb_read(&client->send_rb, client->mqtt_state.out_buffer, msg_len);
-    }
-    rb_write(&client->send_rb,
-             client->mqtt_state.outbound_message->data,
-             client->mqtt_state.outbound_message->length);
-    xQueueSend(client->xSendingQueue, &client->mqtt_state.outbound_message->length, 0);
+  int msg_len;
+
+  while (rb_available(&client->send_rb) < client->mqtt_state.outbound_message->length) {
+    xQueueReceive(client->xSendingQueue, &msg_len, 1000 / portTICK_RATE_MS);
+    rb_read(&client->send_rb, client->mqtt_state.out_buffer, msg_len);
+  }
+
+  rb_write(&client->send_rb,
+           client->mqtt_state.outbound_message->data,
+           client->mqtt_state.outbound_message->length);
+  xQueueSend(client->xSendingQueue, &client->mqtt_state.outbound_message->length, 0);
 }
 
 static bool client_connect(mqtt_client *client)
 {
-    struct sockaddr_in remote_ip;
+  struct sockaddr_in remote_ip;
 
+  while (1) {
+
+    bzero(&remote_ip, sizeof(struct sockaddr_in));
+    remote_ip.sin_family = AF_INET;
+    remote_ip.sin_port   = htons(client->settings->port);
+
+    //if host is not ip address, resolve it
+    if (inet_aton( client->settings->host, &(remote_ip.sin_addr)) == 0) {
+      mqtt_info("Resolve dns for domain: %s", client->settings->host);
+
+      if (!resolve_dns(client->settings->host, &remote_ip)) {
+        vTaskDelay(1000 / portTICK_RATE_MS);
+        continue;
+      }
+    }
+
+    client->socket = socket(PF_INET, SOCK_STREAM, 0);
+    if (client->socket == -1) {
+      mqtt_error("Failed to create socket");
+      return false; // OS problem...
+    }
+    
+    mqtt_info("Connecting to server %s:%d,%d",
+              inet_ntoa((remote_ip.sin_addr)),
+              client->settings->port,
+              remote_ip.sin_port);
+
+    // Two ways to exit the following loop:
+    // 1) A connect success: "return true" to the caller
+    // 2) An error: "break" to permit structure cleanup
     while (1) {
+      
+      if (connect(client->socket, (struct sockaddr *)(&remote_ip), sizeof(struct sockaddr)) != 0) {
+        mqtt_error("Connect failed");
+        break;
+      }
 
-        bzero(&remote_ip, sizeof(struct sockaddr_in));
-        remote_ip.sin_family = AF_INET;
-        remote_ip.sin_port = htons(client->settings->port);
-
-
-        //if host is not ip address, resolve it
-        if (inet_aton( client->settings->host, &(remote_ip.sin_addr)) == 0) {
-            mqtt_info("Resolve dns for domain: %s", client->settings->host);
-
-            if (!resolve_dns(client->settings->host, &remote_ip)) {
-                vTaskDelay(1000 / portTICK_RATE_MS);
-                continue;
-            }
-        }
-
-
-#if CONFIG_MQTT_SECURITY_ON  // ENABLE MQTT OVER SSL
+      #if defined(CONFIG_MQTT_SECURITY_ON)  // ENABLE MQTT OVER SSL
         client->ctx = NULL;
         client->ssl = NULL;
 
         client->ctx = SSL_CTX_new(TLSv1_2_client_method());
         if (!client->ctx) {
-            mqtt_error("Failed to create SSL CTX");
-            goto failed1;
-        }
-#endif
-
-        client->socket = socket(PF_INET, SOCK_STREAM, 0);
-        if (client->socket == -1) {
-            mqtt_error("Failed to create socket");
-            goto failed2;
+          mqtt_error("Failed to create SSL CTX");
+          break;
         }
 
-
-
-        mqtt_info("Connecting to server %s:%d,%d",
-                  inet_ntoa((remote_ip.sin_addr)),
-                  client->settings->port,
-                  remote_ip.sin_port);
-
-
-        if (connect(client->socket, (struct sockaddr *)(&remote_ip), sizeof(struct sockaddr)) != 00) {
-            mqtt_error("Connect failed");
-            goto failed3;
-        }
-
-#if CONFIG_MQTT_SECURITY_ON  // ENABLE MQTT OVER SSL
         mqtt_info("Creating SSL object...");
         client->ssl = SSL_new(client->ctx);
         if (!client->ssl) {
-            mqtt_error("Unable to creat new SSL");
-            goto failed3;
+          mqtt_error("Unable to creat new SSL");
+          break;
         }
 
         if (!SSL_set_fd(client->ssl, client->socket)) {
-            mqtt_error("SSL set_fd failed");
-            goto failed3;
+          mqtt_error("SSL set_fd failed");
+          break;
         }
 
         mqtt_info("Start SSL connect..");
         if (!SSL_connect(client->ssl)) {
-            mqtt_error("SSL Connect FAILED");
-            goto failed4;
+          mqtt_error("SSL Connect FAILED");
+          break;
         }
-#endif
-        mqtt_info("Connected!");
+      #endif
 
-        return true;
+      mqtt_info("Connected!");
 
-        //failed5:
-        //   SSL_shutdown(client->ssl);
+      return true;
+    }
 
-#if CONFIG_MQTT_SECURITY_ON
-        failed4:
-          SSL_free(client->ssl);
-          client->ssl = NULL;
-#endif
+    // Coming here, there was an errror. Cleanup before next loop
+    
+    if (client->socket != -1) {
+      close(client->socket);
+      client->socket = -1;
+    }
 
-        failed3:
-          close(client->socket);
-          client->socket = -1;
+    #if defined(CONFIG_MQTT_SECURITY_ON)
+      if (client->ssl != NULL) {
+        SSL_free(client->ssl);
+        client->ssl = NULL;
+      }
 
-        failed2:
-#if CONFIG_MQTT_SECURITY_ON
-          SSL_CTX_free(client->ctx);
-
-        failed1:
-          client->ctx = NULL;
-#endif
-         vTaskDelay(1000 / portTICK_RATE_MS);
-
-     }
+      if (client->ctx != NULL) {
+        SSL_CTX_free(client->ctx);
+        client->ctx = NULL;
+      }
+    #endif
+    
+    vTaskDelay(1000 / portTICK_RATE_MS);
+  }
 }
 
 
 // Close client socket
 // including SSL objects if CNFIG_MQTT_SECURITY_ON is enabled
-void closeclient(mqtt_client *client)
+void close_client(mqtt_client *client)
 {
-    mqtt_info("Closing client socket");
+  mqtt_info("Closing client socket");
 
-    if (client->socket != -1)
-	{
+  if (client->socket != -1) {
 	  close(client->socket);
 	  client->socket = -1;
 	}
 
-#if CONFIG_MQTT_SECURITY_ON
-	if (client->ssl != NULL)
-	{
-	  SSL_shutdown(client->ssl);
+  #if defined(CONFIG_MQTT_SECURITY_ON)
+  if (client->ssl != NULL) {
+  	  SSL_shutdown(client->ssl);
 
-	  SSL_free(client->ssl);
-	  client->ssl = NULL;
-	}
+  	  SSL_free(client->ssl);
+  	  client->ssl = NULL;
+  	}
 
-	if (client->ctx != NULL)
-	{
-	  SSL_CTX_free(client->ctx);
-	  client->ctx = NULL;
-	}
-#endif
-
+  	if (client->ctx != NULL) {
+  	  SSL_CTX_free(client->ctx);
+  	  client->ctx = NULL;
+  	}
+  #endif
 }
 
 int mqtt_read(mqtt_client *client, void *buffer, int len, int timeout_ms)
 {
-    int result;
-    struct timeval tv;
-    if (timeout_ms > 0) {
-        tv.tv_sec = 0;
-        tv.tv_usec = timeout_ms * 1000;
-        while (tv.tv_usec > 1000 * 1000) {
-            tv.tv_usec -= 1000 * 1000;
-            tv.tv_sec++;
-        }
-        setsockopt(client->socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  int result;
+  struct timeval tv;
+  if (timeout_ms > 0) {
+    tv.tv_sec = 0;
+    tv.tv_usec = timeout_ms * 1000;
+    while (tv.tv_usec > 1000 * 1000) {
+      tv.tv_usec -= 1000 * 1000;
+      tv.tv_sec++;
     }
+    setsockopt(client->socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  }
 
-#if CONFIG_MQTT_SECURITY_ON
+  #if defined(CONFIG_MQTT_SECURITY_ON)
     result = SSL_read(client->ssl, buffer, len);
-#else
+  #else
     result = read(client->socket, buffer, len);
-#endif
+  #endif
 
-    if (timeout_ms > 0) {
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
-        setsockopt(client->socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    }
+  if (timeout_ms > 0) {
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    setsockopt(client->socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  }
 
-    return result;
+  return result;
 }
 
 int mqtt_write(mqtt_client *client, const void *buffer, int len, int timeout_ms)
 {
-    int result;
-    struct timeval tv;
-    if (timeout_ms > 0) {
-        tv.tv_sec = 0;
-        tv.tv_usec = timeout_ms * 1000;
-        while (tv.tv_usec > 1000 * 1000) {
-            tv.tv_usec -= 1000 * 1000;
-            tv.tv_sec++;
-        }
-        setsockopt(client->socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  int result;
+  struct timeval tv;
+  
+  if (timeout_ms > 0) {
+    tv.tv_sec = 0;
+    tv.tv_usec = timeout_ms * 1000;
+    while (tv.tv_usec > 1000 * 1000) {
+      tv.tv_usec -= 1000 * 1000;
+      tv.tv_sec++;
     }
+    setsockopt(client->socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  }
 
-#if CONFIG_MQTT_SECURITY_ON
+  #if defined(CONFIG_MQTT_SECURITY_ON)
     result = SSL_write(client->ssl, buffer, len);
-#else
+  #else
     result = write(client->socket, buffer, len);
-#endif
+  #endif
 
-    if (result > 0 && timeout_ms > 0) {
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
-        setsockopt(client->socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    }
+  if (result > 0 && timeout_ms > 0) {
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    setsockopt(client->socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  }
 
-    return result;
+  return result;
 }
 
 /*
@@ -241,63 +247,72 @@ int mqtt_write(mqtt_client *client, const void *buffer, int len, int timeout_ms)
  */
 static bool mqtt_connect(mqtt_client *client)
 {
-    int write_len, read_len, connect_rsp_code;
+  int write_len, read_len, connect_rsp_code;
 
 
-    mqtt_msg_init(&client->mqtt_state.mqtt_connection,
-                  client->mqtt_state.out_buffer,
-                  client->mqtt_state.out_buffer_length);
-    client->mqtt_state.outbound_message = mqtt_msg_connect(&client->mqtt_state.mqtt_connection,
-                                          client->mqtt_state.connect_info);
-    client->mqtt_state.pending_msg_type = mqtt_get_type(client->mqtt_state.outbound_message->data);
-    client->mqtt_state.pending_msg_id = mqtt_get_id(client->mqtt_state.outbound_message->data,
-                                        client->mqtt_state.outbound_message->length);
-    mqtt_info("Sending MQTT CONNECT message, type: %d, id: %04X",
-              client->mqtt_state.pending_msg_type,
-              client->mqtt_state.pending_msg_id);
+  mqtt_msg_init(&client->mqtt_state.mqtt_connection,
+                client->mqtt_state.out_buffer,
+                client->mqtt_state.out_buffer_length);
+                
+  client->mqtt_state.outbound_message = mqtt_msg_connect(&client->mqtt_state.mqtt_connection,
+                                                         client->mqtt_state.connect_info);
+                                        
+  client->mqtt_state.pending_msg_type = mqtt_get_type(client->mqtt_state.outbound_message->data);
+  client->mqtt_state.pending_msg_id = mqtt_get_id(client->mqtt_state.outbound_message->data,
+                                                  client->mqtt_state.outbound_message->length);
+                                                  
+  mqtt_info("Sending MQTT CONNECT message, type: %d, id: %04X",
+            client->mqtt_state.pending_msg_type,
+            client->mqtt_state.pending_msg_id);
 
-    write_len = client->settings->write_cb(client,
-                      client->mqtt_state.outbound_message->data,
-                      client->mqtt_state.outbound_message->length, 0);
-    if(write_len < 0) {
-        mqtt_error("Writing failed: %d", errno);
-        return false;
-    }
-
-    mqtt_info("Reading MQTT CONNECT response message");
-
-    read_len = client->settings->read_cb(client, client->mqtt_state.in_buffer, CONFIG_MQTT_BUFFER_SIZE_BYTE, 10 * 1000);
-
-    if (read_len < 0) {
-        mqtt_error("Error network response");
-        return false;
-    }
-    if (mqtt_get_type(client->mqtt_state.in_buffer) != MQTT_MSG_TYPE_CONNACK) {
-        mqtt_error("Invalid MSG_TYPE response: %d, read_len: %d", mqtt_get_type(client->mqtt_state.in_buffer), read_len);
-        return false;
-    }
-    connect_rsp_code = mqtt_get_connect_return_code(client->mqtt_state.in_buffer);
-    switch (connect_rsp_code) {
-        case CONNECTION_ACCEPTED:
-            mqtt_info("Connected");
-            return true;
-        case CONNECTION_REFUSE_PROTOCOL:
-            mqtt_warn("Connection refused, bad protocol");
-            return false;
-        case CONNECTION_REFUSE_SERVER_UNAVAILABLE:
-            mqtt_warn("Connection refused, server unavailable");
-            return false;
-        case CONNECTION_REFUSE_BAD_USERNAME:
-            mqtt_warn("Connection refused, bad username or password");
-            return false;
-        case CONNECTION_REFUSE_NOT_AUTHORIZED:
-            mqtt_warn("Connection refused, not authorized");
-            return false;
-        default:
-            mqtt_warn("Connection refused, Unknown reason");
-            return false;
-    }
+  write_len = client->settings->write_cb(client,
+                    client->mqtt_state.outbound_message->data,
+                    client->mqtt_state.outbound_message->length, 0);
+                    
+  if(write_len < 0) {
+    mqtt_error("Writing failed: %d", errno);
     return false;
+  }
+
+  mqtt_info("Reading MQTT CONNECT response message");
+
+  read_len = client->settings->read_cb(client, 
+                                       client->mqtt_state.in_buffer, 
+                                       CONFIG_MQTT_BUFFER_SIZE_BYTE, 
+                                       10 * 1000);
+
+  if (read_len < 0) {
+    mqtt_error("Error network response");
+    return false;
+  }
+  if (mqtt_get_type(client->mqtt_state.in_buffer) != MQTT_MSG_TYPE_CONNACK) {
+    mqtt_error("Invalid MSG_TYPE response: %d, read_len: %d", 
+               mqtt_get_type(client->mqtt_state.in_buffer), 
+               read_len);
+    return false;
+  }
+  connect_rsp_code = mqtt_get_connect_return_code(client->mqtt_state.in_buffer);
+  switch (connect_rsp_code) {
+    case CONNECTION_ACCEPTED:
+      mqtt_info("Connected");
+      return true;
+    case CONNECTION_REFUSE_PROTOCOL:
+      mqtt_warn("Connection refused, bad protocol");
+      return false;
+    case CONNECTION_REFUSE_SERVER_UNAVAILABLE:
+      mqtt_warn("Connection refused, server unavailable");
+      return false;
+    case CONNECTION_REFUSE_BAD_USERNAME:
+      mqtt_warn("Connection refused, bad username or password");
+      return false;
+    case CONNECTION_REFUSE_NOT_AUTHORIZED:
+      mqtt_warn("Connection refused, not authorized");
+      return false;
+    default:
+      mqtt_warn("Connection refused, Unknown reason");
+      return false;
+  }
+  return false;
 }
 
 void mqtt_sending_task(void *pvParameters)
@@ -355,7 +370,7 @@ void mqtt_sending_task(void *pvParameters)
             }
         }
     }
-    closeclient(client);
+    close_client(client);
     xMqttSendingTask = NULL;
     mqtt_info("mqtt_sending_task destroy");
     vTaskDelete(NULL);
@@ -612,13 +627,13 @@ mqtt_client *mqtt_start(mqtt_settings *settings)
     if (!client->settings->connect_cb)
         client->settings->connect_cb = client_connect;
     if (!client->settings->disconnect_cb)
-        client->settings->disconnect_cb = closeclient;
+        client->settings->disconnect_cb = close_client;
     if (!client->settings->read_cb)
         client->settings->read_cb = mqtt_read;
     if (!client->settings->write_cb)
         client->settings->write_cb = mqtt_write;
 
-#if CONFIG_MQTT_SECURITY_ON  // ENABLE MQTT OVER SSL
+#if defined(CONFIG_MQTT_SECURITY_ON)  // ENABLE MQTT OVER SSL
     client->ctx = NULL;
     client->ssl = NULL;
     stackSize = 10240; // Need more stack to handle SSL handshake

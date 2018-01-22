@@ -32,150 +32,157 @@
 #include <string.h>
 #include "mqtt_msg.h"
 #include "mqtt_config.h"
+
+#define TAG "MQTT_MSG"
+
 #define MQTT_MAX_FIXED_HEADER_SIZE 3
 
 enum mqtt_connect_flag
 {
-    MQTT_CONNECT_FLAG_USERNAME = 1 << 7,
-    MQTT_CONNECT_FLAG_PASSWORD = 1 << 6,
-    MQTT_CONNECT_FLAG_WILL_RETAIN = 1 << 5,
-    MQTT_CONNECT_FLAG_WILL = 1 << 2,
-    MQTT_CONNECT_FLAG_CLEAN_SESSION = 1 << 1
+  MQTT_CONNECT_FLAG_USERNAME      = 1 << 7,
+  MQTT_CONNECT_FLAG_PASSWORD      = 1 << 6,
+  MQTT_CONNECT_FLAG_WILL_RETAIN   = 1 << 5,
+  MQTT_CONNECT_FLAG_WILL          = 1 << 2,
+  MQTT_CONNECT_FLAG_CLEAN_SESSION = 1 << 1
 };
 
 struct __attribute((__packed__)) mqtt_connect_variable_header
 {
-    uint8_t lengthMsb;
-    uint8_t lengthLsb;
-#if defined(CONFIG_MQTT_PROTOCOL_311)
+  uint8_t lengthMsb;
+  uint8_t lengthLsb;
+  
+  #if defined(CONFIG_MQTT_PROTOCOL_311)
     uint8_t magic[4];
-#else
+  #else
     uint8_t magic[6];
-#endif
-    uint8_t version;
-    uint8_t flags;
-    uint8_t keepaliveMsb;
-    uint8_t keepaliveLsb;
+  #endif
+  
+  uint8_t version;
+  uint8_t flags;
+  uint8_t keepaliveMsb;
+  uint8_t keepaliveLsb;
 };
 
 static int append_string(mqtt_connection_t* connection, const char* string, int len)
 {
-    if (connection->message.length + len + 2 > connection->buffer_length)
-        return -1;
+  if (connection->message.length + len + 2 > connection->buffer_length) {
+    return -1;
+  }
 
-    connection->buffer[connection->message.length++] = len >> 8;
-    connection->buffer[connection->message.length++] = len & 0xff;
-    memcpy(connection->buffer + connection->message.length, string, len);
-    connection->message.length += len;
+  connection->buffer[connection->message.length++] = len >> 8;
+  connection->buffer[connection->message.length++] = len & 0xff;
+  memcpy(connection->buffer + connection->message.length, string, len);
+  connection->message.length += len;
 
-    return len + 2;
+  return len + 2;
 }
 
 static uint16_t append_message_id(mqtt_connection_t* connection, uint16_t message_id)
 {
-    // If message_id is zero then we should assign one, otherwise
-    // we'll use the one supplied by the caller
-    while (message_id == 0)
-        message_id = ++connection->message_id;
+  // If message_id is zero then we should assign one, otherwise
+  // we'll use the one supplied by the caller
+  while (message_id == 0) {
+    message_id = ++connection->message_id;
+  }
+  
+  if (connection->message.length + 2 > connection->buffer_length) {
+    return 0;
+  }
 
-    if (connection->message.length + 2 > connection->buffer_length)
-        return 0;
+  connection->buffer[connection->message.length++] = message_id >> 8;
+  connection->buffer[connection->message.length++] = message_id & 0xff;
 
-    connection->buffer[connection->message.length++] = message_id >> 8;
-    connection->buffer[connection->message.length++] = message_id & 0xff;
-
-    return message_id;
+  return message_id;
 }
 
 static int init_message(mqtt_connection_t* connection)
 {
-    connection->message.length = MQTT_MAX_FIXED_HEADER_SIZE;
-    return MQTT_MAX_FIXED_HEADER_SIZE;
+  connection->message.length = MQTT_MAX_FIXED_HEADER_SIZE;
+  return MQTT_MAX_FIXED_HEADER_SIZE;
 }
 
 static mqtt_message_t* fail_message(mqtt_connection_t* connection)
 {
-    connection->message.data = connection->buffer;
-    connection->message.length = 0;
-    return &connection->message;
+  connection->message.data = connection->buffer;
+  connection->message.length = 0;
+  return &connection->message;
 }
 
 static mqtt_message_t* fini_message(mqtt_connection_t* connection, int type, int dup, int qos, int retain)
 {
-    int remaining_length = connection->message.length - MQTT_MAX_FIXED_HEADER_SIZE;
+  int remaining_length = connection->message.length - MQTT_MAX_FIXED_HEADER_SIZE;
 
-    if (remaining_length > 127)
-    {
-        connection->buffer[0] = ((type & 0x0f) << 4) | ((dup & 1) << 3) | ((qos & 3) << 1) | (retain & 1);
-        connection->buffer[1] = 0x80 | (remaining_length % 128);
-        connection->buffer[2] = remaining_length / 128;
-        connection->message.length = remaining_length + 3;
-        connection->message.data = connection->buffer;
-    }
-    else
-    {
-        connection->buffer[1] = ((type & 0x0f) << 4) | ((dup & 1) << 3) | ((qos & 3) << 1) | (retain & 1);
-        connection->buffer[2] = remaining_length;
-        connection->message.length = remaining_length + 2;
-        connection->message.data = connection->buffer + 1;
-    }
+  if (remaining_length > 127) {
+    connection->buffer[0] = ((type & 0x0f) << 4) | ((dup & 1) << 3) | ((qos & 3) << 1) | (retain & 1);
+    connection->buffer[1] = 0x80 | (remaining_length % 128);
+    connection->buffer[2] = remaining_length / 128;
+    connection->message.length = remaining_length + 3;
+    connection->message.data = connection->buffer;
+  }
+  else {
+    connection->buffer[1] = ((type & 0x0f) << 4) | ((dup & 1) << 3) | ((qos & 3) << 1) | (retain & 1);
+    connection->buffer[2] = remaining_length;
+    connection->message.length = remaining_length + 2;
+    connection->message.data = connection->buffer + 1;
+  }
 
-    return &connection->message;
+  return &connection->message;
 }
 
 void mqtt_msg_init(mqtt_connection_t* connection, uint8_t* buffer, uint16_t buffer_length)
 {
-    memset(connection, 0, sizeof(mqtt_connection_t));
-    connection->buffer = buffer;
-    connection->buffer_length = buffer_length;
+  memset(connection, 0, sizeof(mqtt_connection_t));
+  connection->buffer = buffer;
+  connection->buffer_length = buffer_length;
 }
 
 int mqtt_get_total_length(uint8_t* buffer, uint16_t length)
 {
-    int i;
-    int totlen = 0;
+  int i;
+  int totlen = 0;
 
-    for (i = 1; i < length; ++i)
-    {
-        totlen += (buffer[i] & 0x7f) << (7 * (i - 1));
-        if ((buffer[i] & 0x80) == 0)
-        {
-            ++i;
-            break;
-        }
+  for (i = 1; i < length; ++i) {
+    totlen += (buffer[i] & 0x7f) << (7 * (i - 1));
+    if ((buffer[i] & 0x80) == 0) {
+      ++i;
+      break;
     }
-    totlen += i;
+  }
+  totlen += i;
 
-    return totlen;
+  return totlen;
 }
 
 const char* mqtt_get_publish_topic(uint8_t* buffer, uint16_t* length)
 {
-    int i;
-    int totlen = 0;
-    int topiclen;
+  int i;
+  int totlen = 0;
+  int topiclen;
 
-    for (i = 1; i < *length; ++i)
-    {
-        totlen += (buffer[i] & 0x7f) << (7 * (i - 1));
-        if ((buffer[i] & 0x80) == 0)
-        {
-            ++i;
-            break;
-        }
+  for (i = 1; i < *length; ++i) {
+    totlen += (buffer[i] & 0x7f) << (7 * (i - 1));
+    if ((buffer[i] & 0x80) == 0) {
+        ++i;
+        break;
     }
-    totlen += i;
+  }
+  
+  totlen += i;
 
-    if (i + 2 >= *length)
-        return NULL;
-    topiclen = buffer[i++] << 8;
-    topiclen |= buffer[i++];
+  if (i + 2 >= *length) {
+    return NULL;
+  }
 
-    if (i + topiclen > *length)
-        return NULL;
+  topiclen = buffer[i++] << 8;
+  topiclen |= buffer[i++];
 
-    *length = topiclen;
-    return (const char*)(buffer + i);
+  if (i + topiclen > *length) {
+    return NULL;
+  }
+
+  *length = topiclen;
+  
+  return (const char*)(buffer + i);
 }
 
 const char* mqtt_get_publish_data(uint8_t* buffer, uint16_t* length)
@@ -226,64 +233,58 @@ const char* mqtt_get_publish_data(uint8_t* buffer, uint16_t* length)
 
 uint16_t mqtt_get_id(uint8_t* buffer, uint16_t length)
 {
-    if (length < 1)
+  int i;
+  int topiclen;
+
+  if (length < 1) return 0;
+
+  switch (mqtt_get_type(buffer))
+  {
+    case MQTT_MSG_TYPE_PUBLISH:
+
+      for (i = 1; i < length; ++i) {
+        if ((buffer[i] & 0x80) == 0) {
+          ++i;
+          break;
+        }
+      }
+
+      if (i + 2 >= length) return 0;
+      
+      topiclen = buffer[i++] << 8;
+      topiclen |= buffer[i++];
+
+      if (i + topiclen >= length) return 0;
+      
+      i += topiclen;
+
+      if (mqtt_get_qos(buffer) > 0) {
+        if (i + 2 >= length) return 0;
+        //i += 2;
+      } 
+      else {
         return 0;
+      }
 
-    switch (mqtt_get_type(buffer))
-    {
-        case MQTT_MSG_TYPE_PUBLISH:
-            {
-                int i;
-                int topiclen;
+      return (buffer[i] << 8) | buffer[i + 1];
 
-                for (i = 1; i < length; ++i)
-                {
-                    if ((buffer[i] & 0x80) == 0)
-                    {
-                        ++i;
-                        break;
-                    }
-                }
+    case MQTT_MSG_TYPE_PUBACK:
+    case MQTT_MSG_TYPE_PUBREC:
+    case MQTT_MSG_TYPE_PUBREL:
+    case MQTT_MSG_TYPE_PUBCOMP:
+    case MQTT_MSG_TYPE_SUBACK:
+    case MQTT_MSG_TYPE_UNSUBACK:
+    case MQTT_MSG_TYPE_SUBSCRIBE:
+      // This requires the remaining length to be encoded in 1 byte,
+      // which it should be.
+      if (length >= 4 && (buffer[1] & 0x80) == 0) {
+        return (buffer[2] << 8) | buffer[3];
+      }
+      return 0;
 
-                if (i + 2 >= length)
-                    return 0;
-                topiclen = buffer[i++] << 8;
-                topiclen |= buffer[i++];
-
-                if (i + topiclen >= length)
-                    return 0;
-                i += topiclen;
-
-                if (mqtt_get_qos(buffer) > 0)
-                {
-                    if (i + 2 >= length)
-                        return 0;
-                    //i += 2;
-                } else {
-                    return 0;
-                }
-
-                return (buffer[i] << 8) | buffer[i + 1];
-            }
-        case MQTT_MSG_TYPE_PUBACK:
-        case MQTT_MSG_TYPE_PUBREC:
-        case MQTT_MSG_TYPE_PUBREL:
-        case MQTT_MSG_TYPE_PUBCOMP:
-        case MQTT_MSG_TYPE_SUBACK:
-        case MQTT_MSG_TYPE_UNSUBACK:
-        case MQTT_MSG_TYPE_SUBSCRIBE:
-            {
-                // This requires the remaining length to be encoded in 1 byte,
-                // which it should be.
-                if (length >= 4 && (buffer[1] & 0x80) == 0)
-                    return (buffer[2] << 8) | buffer[3];
-                else
-                    return 0;
-            }
-
-        default:
-            return 0;
-    }
+    default:
+      return 0;
+  }
 }
 
 mqtt_message_t* mqtt_msg_connect(mqtt_connection_t* connection, mqtt_connect_info_t* info)
