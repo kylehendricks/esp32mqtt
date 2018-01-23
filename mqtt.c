@@ -163,22 +163,22 @@ void close_client(mqtt_client * client)
   mqtt_info("Closing client socket");
 
   if (client->socket != -1) {
-	  close(client->socket);
-	  client->socket = -1;
-	}
+    close(client->socket);
+    client->socket = -1;
+  }
 
   #if CONFIG_MQTT_SECURITY_ON
     if (client->ssl != NULL) {
-  	  SSL_shutdown(client->ssl);
+      SSL_shutdown(client->ssl);
 
-  	  SSL_free(client->ssl);
-  	  client->ssl = NULL;
-  	}
+      SSL_free(client->ssl);
+      client->ssl = NULL;
+    }
 
-  	if (client->ctx != NULL) {
-  	  SSL_CTX_free(client->ctx);
-  	  client->ctx = NULL;
-  	}
+    if (client->ctx != NULL) {
+      SSL_CTX_free(client->ctx);
+      client->ctx = NULL;
+    }
   #endif
 }
 
@@ -379,8 +379,8 @@ void mqtt_sending_task(void * pvParameters)
         if (send_len <= 0) {
           mqtt_info("Write error: %d", errno);
           connected = false;
-			    break;
-		    }
+          break;
+        }
       }
     }
   } // while
@@ -449,8 +449,8 @@ void mqtt_start_receive_schedule(mqtt_client * client)
 
   while (1) {
 
-  	if (terminate_mqtt) break;
-  	if (xMqttSendingTask == NULL) break;
+    if (terminate_mqtt) break;
+    if (xMqttSendingTask == NULL) break;
 
     read_len = client->settings->read_cb(client,
                                          client->mqtt_state.in_buffer,
@@ -556,9 +556,9 @@ void mqtt_start_receive_schedule(mqtt_client * client)
 
 void mqtt_destroy(mqtt_client * client)
 {
-	if (client == NULL) return;
+  if (client == NULL) return;
 
-	vQueueDelete(client->xSendingQueue);
+  vQueueDelete(client->xSendingQueue);
 
   free(client->mqtt_state.in_buffer);
   free(client->mqtt_state.out_buffer);
@@ -575,7 +575,7 @@ void mqtt_task(void * pvParameters)
   mqtt_client *client = (mqtt_client *)pvParameters;
 
   while (1) {
-  	if (terminate_mqtt) break;
+    if (terminate_mqtt) break;
 
     client->settings->connect_cb(client);
 
@@ -587,15 +587,15 @@ void mqtt_task(void * pvParameters)
       client->settings->disconnect_cb(client);
 
       if (client->settings->disconnected_cb) {
-		    client->settings->disconnected_cb(client, NULL);
-	    }
+        client->settings->disconnected_cb(client, NULL);
+      }
 
       if (!client->settings->auto_reconnect) {
-			  break;
-		  }
+        break;
+      }
       else {
-			  continue;
-		  }
+        continue;
+      }
     }
 
     mqtt_info("Connected to MQTT broker, create sending thread before call connected callback");
@@ -609,15 +609,15 @@ void mqtt_task(void * pvParameters)
 
     client->settings->disconnect_cb(client);
     if (client->settings->disconnected_cb) {
-    	client->settings->disconnected_cb(client, NULL);
-	  }
+      client->settings->disconnected_cb(client, NULL);
+    }
 
     if (xMqttSendingTask != NULL) {
-    	vTaskDelete(xMqttSendingTask);
+      vTaskDelete(xMqttSendingTask);
     }
     if (!client->settings->auto_reconnect) {
-		  break;
-	  }
+      break;
+    }
 
     // clean up for new reconnect
     xQueueReset(client->xSendingQueue);
@@ -633,7 +633,7 @@ void mqtt_task(void * pvParameters)
 
 mqtt_client * mqtt_start(mqtt_settings * settings)
 {
-	terminate_mqtt = false;
+  terminate_mqtt = false;
 
   int stackSize = 2048;
 
@@ -653,20 +653,20 @@ mqtt_client * mqtt_start(mqtt_settings * settings)
     mqtt_error("Last will message longer than CONFIG_MQTT_MAX_LWT_MSG!");
   }
 
-  client->settings                   = settings;
-  client->connect_info.client_id     = settings->client_id;
-  client->connect_info.username      = settings->username;
-  client->connect_info.password      = settings->password;
-  client->connect_info.will_topic    = settings->lwt_topic;
-  client->connect_info.will_message  = settings->lwt_msg;
-  client->connect_info.will_qos      = settings->lwt_qos;
-  client->connect_info.will_retain   = settings->lwt_retain;
-  client->connect_info.will_length   = settings->lwt_msg_len;
+  client->settings                     = settings;
+  client->connect_info.client_id       = settings->client_id;
+  client->connect_info.username        = settings->username;
+  client->connect_info.password        = settings->password;
+  client->connect_info.will_topic      = settings->lwt_topic;
+  client->connect_info.will_message    = settings->lwt_msg;
+  client->connect_info.will_qos        = settings->lwt_qos;
+  client->connect_info.will_retain     = settings->lwt_retain;
+  client->connect_info.will_length     = settings->lwt_msg_len;
 
-  client->keepalive_tick             = settings->keepalive / 2;
+  client->keepalive_tick               = settings->keepalive / 2;
 
-  client->connect_info.keepalive     = settings->keepalive;
-  client->connect_info.clean_session = settings->clean_session;
+  client->connect_info.keepalive       = settings->keepalive;
+  client->connect_info.clean_session   = settings->clean_session;
 
   client->mqtt_state.in_buffer         = (uint8_t *)malloc(CONFIG_MQTT_BUFFER_SIZE_BYTE);
   client->mqtt_state.in_buffer_length  = CONFIG_MQTT_BUFFER_SIZE_BYTE;
@@ -674,7 +674,7 @@ mqtt_client * mqtt_start(mqtt_settings * settings)
   client->mqtt_state.out_buffer_length = CONFIG_MQTT_BUFFER_SIZE_BYTE;
   client->mqtt_state.connect_info      = &client->connect_info;
 
-  client->socket = -1;
+  client->socket                       = -1;
 
   if (!client->settings->connect_cb) {
     client->settings->connect_cb = client_connect;
@@ -730,14 +730,14 @@ void mqtt_subscribe(mqtt_client * client, const char * topic, uint8_t qos)
 
 void mqtt_unsubscribe(mqtt_client * client, const char * topic)
 {
-	client->mqtt_state.outbound_message = mqtt_msg_unsubscribe(&client->mqtt_state.mqtt_connection,
-	                                                           topic,
-	                                                           &client->mqtt_state.pending_msg_id);
-	mqtt_info("Queue unsubscribe, topic\"%s\", id: %d",
+  client->mqtt_state.outbound_message = mqtt_msg_unsubscribe(&client->mqtt_state.mqtt_connection,
+                                                             topic,
+                                                             &client->mqtt_state.pending_msg_id);
+  mqtt_info("Queue unsubscribe, topic\"%s\", id: %d",
             topic,
             client->mqtt_state.pending_msg_id);
 
-	mqtt_queue(client);
+  mqtt_queue(client);
 }
 
 void mqtt_publish(mqtt_client * client, const char * topic, const char * data, int len, int qos, int retain)
@@ -756,5 +756,5 @@ void mqtt_publish(mqtt_client * client, const char * topic, const char * data, i
 
 void mqtt_stop()
 {
-	terminate_mqtt = true;
+  terminate_mqtt = true;
 }
