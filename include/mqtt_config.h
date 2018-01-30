@@ -4,22 +4,6 @@
 #include "sdkconfig.h"
 #include <stdio.h>
 
-#define CONFIG_MQTT_PROTOCOL_311              1
-#define CONFIG_MQTT_SECURITY_ON               1
-#define CONFIG_MQTT_PRIORITY                  5
-#define CONFIG_MQTT_LOG_ERROR_ON              1
-#define CONFIG_MQTT_LOG_WARN_ON               1
-#define CONFIG_MQTT_LOG_INFO_ON               1
-#define CONFIG_MQTT_RECONNECT_TIMEOUT        60
-#define CONFIG_MQTT_QUEUE_BUFFER_SIZE_WORD 1024
-#define CONFIG_MQTT_BUFFER_SIZE_BYTE       1024
-#define CONFIG_MQTT_MAX_HOST_LEN             64
-#define CONFIG_MQTT_MAX_CLIENT_LEN           32
-#define CONFIG_MQTT_MAX_USERNAME_LEN         32
-#define CONFIG_MQTT_MAX_PASSWORD_LEN         32
-#define CONFIG_MQTT_MAX_LWT_TOPIC            32
-#define CONFIG_MQTT_MAX_LWT_MSG              32
-
 #if CONFIG_MQTT_LOG_ERROR_ON
   #define mqtt_error(...) ESP_LOGE(TAG, __VA_ARGS__)
 #else
